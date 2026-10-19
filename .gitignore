@@ -1,3 +1,7 @@
 # build/test scratch
 *.log
 /tmp/
+
+# written by the smoke test / the pipeline
+.ci-tools/
+engine.env

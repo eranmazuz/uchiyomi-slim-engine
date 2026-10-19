@@ -36,17 +36,20 @@ steps:
         set -eu
         TAG=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest | jq -r .tag_name)
         [ -n "$TAG" ] && [ "$TAG" != "null" ] || { echo "could not resolve the newest Suwayomi release"; exit 1; }
-        SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/${TAG}/Checksums.sha256" \
+        # NOTE: bare $VAR only, never ${VAR}. Woodpecker substitutes ${VAR} in the config itself,
+        # before the script runs, so ${TAG} arrives empty (measured: it produced download//Checksums.sha256
+        # and a 404 while $TAG in the same script held the right value).
+        SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
               | awk '/\.jar$/ {print $1}' | head -1)
-        [ -n "$SUM" ] || { echo "no jar checksum in the ${TAG} release"; exit 1; }
+        [ -n "$SUM" ] || { echo "no jar checksum in the $TAG release"; exit 1; }
         # dereference the tag to its commit; annotated tags need the ^{} suffix
-        SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/${TAG}^{}" | cut -c1-8)
-        [ -n "$SHA" ] || SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/${TAG}" | cut -c1-8)
-        [ -n "$SHA" ] || { echo "could not resolve ${TAG} to a commit"; exit 1; }
+        SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$TAG^{}" | cut -c1-8)
+        [ -n "$SHA" ] || SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$TAG" | cut -c1-8)
+        [ -n "$SHA" ] || { echo "could not resolve $TAG to a commit"; exit 1; }
         {
-          echo "ENGINE_VERSION=${TAG}"
-          echo "ENGINE_SHA256=${SUM}"
-          echo "ENGINE_SHA=${SHA}"
+          echo "ENGINE_VERSION=$TAG"
+          echo "ENGINE_SHA256=$SUM"
+          echo "ENGINE_SHA=$SHA"
           echo "ENGINE_DATE=$(date -u +%F)"
         } > engine.env
         echo "engine under test:"; cat engine.env
