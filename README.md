@@ -164,7 +164,8 @@ whether the solved response is used in place of the site's own.
    Sites go down, rate-limit and Cloudflare-block CI IPs, and extensions get retired upstream; none of
    that is a regression in this image, so it must not fail the release — or delay it.
 
-The registry, for anyone debugging this: `https://10.100.102.2:21100`, a **self-signed** certificate
+The registry, for anyone debugging this: a self-hosted registry on the LAN over **HTTPS on port 21100**
+with a **self-signed** certificate
 (subject == issuer) with plain Basic auth on `/v2/` — no token service. An HTTP request to it answers
 `400 Client sent an HTTP request to an HTTPS server`.
 
