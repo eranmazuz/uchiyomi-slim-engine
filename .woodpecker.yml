@@ -11,7 +11,8 @@
 #   * testing BEFORE the build, because a release must prove itself first;
 #   * one step AFTER it, `tag-engine-identity`, for the two tags that identify the ENGINE (the date and
 #     Suwayomi's commit). Those are computed at run time and a plugin's `settings` are static YAML --
-#     Woodpecker substitutes ${VAR} in this file itself, so a computed value cannot reach `tags:`.
+#     Woodpecker substitutes its own dollar-brace variables in this file itself, so a computed value
+#     cannot reach `tags:`.
 #     That step does not rebuild anything: it copies the manifest the build just pushed to the two
 #     extra tag names over the registry API.
 #
@@ -20,8 +21,10 @@
 # Dockerfile reads from the build context, so the image cannot carry an engine the tests did not run
 # against, and the tags cannot describe an engine the image does not contain.
 #
-# ⚠️ In `commands`, use bare $VAR and never ${VAR}: Woodpecker substitutes ${VAR} in the config itself
-# before the script runs, so ${TAG} arrives empty while $TAG in the same script is intact.
+# ⚠️ In `commands`, use bare $VAR and never a dollar-brace reference: Woodpecker substitutes those in the
+# config itself before the script runs, so one arrives empty while a bare $TAG in the same script is
+# intact. A malformed dollar-brace reference (with dots in it, say) fails the whole pipeline at parse
+# time with "unable to parse variable name" -- which is why this file's comments spell it out in words.
 
 networks:
   shared-net:
@@ -155,9 +158,10 @@ steps:
         # engine.env is back to its committed (empty) state -- re-resolve here rather than leave a pushed
         # image untagged, and say so loudly, because it means the tags describe a fresh lookup of the
         # newest release rather than the exact byte-for-byte input the tests saw.
-        # NOTE: every line here must use bare $VAR, never ${VAR}. Woodpecker substitutes ${...} in the
-        # config file itself before the script runs, so ${ENGINE_DATE} arrives empty and ${X:-d} arrives as
-        # the literal default. That is what made this step fail while the values were right there.
+        # NOTE: every line here must use bare $VAR, never a dollar-brace reference. Woodpecker substitutes
+        # those in the config file itself before the script runs, so a reference to ENGINE_DATE arrives
+        # empty and a form with a default arrives as the literal default. That is what made this step fail
+        # while the values were right there.
         ENGINE_VERSION=""; ENGINE_DATE=""; ENGINE_SHA=""
         . ./engine.env
         echo "engine.env says: version=$ENGINE_VERSION date=$ENGINE_DATE sha=$ENGINE_SHA"
