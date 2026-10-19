@@ -19,10 +19,8 @@
 # `when` is a list of conditions that OR together, while the workflow-level block requires all of them
 # to hold -- a "push-to-main OR cron" list up there would never match at all.
 #
-# ⚠️ TEMPORARY: the build and test steps also accept V2, and only so the pipeline can be verified on a
-# branch before it goes to main -- a main-only trigger cannot be tested before it is merged. `push`
-# stays main-only throughout, so a V2 run can never publish anything. This narrows back to main when V2
-# is finished.
+# ⚠️ In a step's `commands`, use bare $VAR and never ${VAR}: Woodpecker substitutes ${VAR} in the
+# config itself before the script runs, so ${TAG} arrives empty while $TAG in the same script is intact.
 
 steps:
   # ---------------------------------------------------------------------------------------------
@@ -55,7 +53,7 @@ steps:
         echo "engine under test:"; cat engine.env
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -79,7 +77,7 @@ steps:
         -t "$IMAGE:latest" -t "$IMAGE:$ENGINE_DATE" -t "$IMAGE:$ENGINE_SHA" .
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -98,7 +96,7 @@ steps:
       - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" hard
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # Advisory: a real extension against a real site. Sites go down, rate-limit and Cloudflare-block CI
@@ -117,7 +115,7 @@ steps:
       - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" site
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
