@@ -1,8 +1,8 @@
 # Woodpecker pipeline for the slim Suwayomi-Server engine.
 #
-# Two triggers, both on main: a push, and the weekly cron. Every run builds the image, proves it works,
-# and only then publishes it -- so a run that fails the test leaves `latest` on the last image that
-# passed, and a bad engine can be stepped back by date.
+# Two triggers, both on main: a push, and the weekly cron. Every run resolves the newest Suwayomi
+# release, proves the engine works, and only then builds and publishes -- so a run that fails the test
+# leaves `latest` on the last image that passed, and a bad engine can be stepped back by date.
 #
 # The engine version is NOT pinned here. Each run resolves the newest Suwayomi release, verifies the jar
 # against that release's own Checksums.sha256, and tags the image three ways:
@@ -12,15 +12,26 @@
 #
 # Those tags identify the ENGINE, not this repo: the image *is* the engine.
 #
-# Steps run serially in the order written, and a failure stops the pipeline, so the order IS the
-# guarantee: build -> test -> push.
+# HOW IT TESTS -- and why no `volumes` trust is needed:
+#   The test runs the engine as an ordinary PROCESS inside the step: the same jar the image carries,
+#   started through the same entrypoint.sh, with the same configuration environment, checked over
+#   localhost. No Docker socket, no container of the built image, nothing mounted from the host.
+#   What that cannot see is the image's own packaging (base image, COPY paths, user, healthcheck), so
+#   the build step guards what it can *without running* it, by inspecting the image it just built
+#   (entrypoint, exposed port, labels).
 #
-# `when` is written on every step rather than once at the top, because the semantics differ: a step's
-# `when` is a list of conditions that OR together, while the workflow-level block requires all of them
-# to hold -- a "push-to-main OR cron" list up there would never match at all.
+# HOW IT BUILDS -- and why a dind service:
+#   The three tags and the two build args are computed at run time, and a step's `settings`/`environment`
+#   are static YAML -- Woodpecker substitutes ${VAR} in this file itself, so dynamic values cannot reach
+#   a plugin that way. A shell that owns a Docker daemon is therefore required, and the daemon is this
+#   pipeline's own `docker:dind` service: the build never touches the agent's daemon, and nothing is
+#   mounted from the host. That needs the repo's `security` trust (privileged), not `volumes`.
 #
-# ⚠️ In a step's `commands`, use bare $VAR and never ${VAR}: Woodpecker substitutes ${VAR} in the
-# config itself before the script runs, so ${TAG} arrives empty while $TAG in the same script is intact.
+#   `--insecure-registry` is hardcoded in the service's arguments below: it is a daemon start flag, so it
+#   cannot come from a secret. If the registry moves, that line moves with it.
+#
+# ⚠️ In `commands`, use bare $VAR and never ${VAR}: Woodpecker substitutes ${VAR} in the config itself
+# before the script runs, so ${TAG} arrives empty while $TAG in the same script is intact.
 
 steps:
   # ---------------------------------------------------------------------------------------------
@@ -34,9 +45,6 @@ steps:
         set -eu
         TAG=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest | jq -r .tag_name)
         [ -n "$TAG" ] && [ "$TAG" != "null" ] || { echo "could not resolve the newest Suwayomi release"; exit 1; }
-        # NOTE: bare $VAR only, never ${VAR}. Woodpecker substitutes ${VAR} in the config itself,
-        # before the script runs, so ${TAG} arrives empty (measured: it produced download//Checksums.sha256
-        # and a 404 while $TAG in the same script held the right value).
         SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
               | awk '/\.jar$/ {print $1}' | head -1)
         [ -n "$SUM" ] || { echo "no jar checksum in the $TAG release"; exit 1; }
@@ -53,79 +61,86 @@ steps:
         echo "engine under test:"; cat engine.env
     when:
       - event: push
-        branch: main
+        branch: [main, V2]
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
-  # 2. build on the agent's own daemon -- not inside the plugin container -- so the test steps can
-  #    actually run the image afterwards
+  # 2. fetch the jar once -- same file, hash-checked the same way as the Dockerfile does it -- and
+  #    cache it in the workspace for both test steps (the workspace is shared between steps)
   # ---------------------------------------------------------------------------------------------
-  build:
-    image: docker:29-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      IMAGE:
-        from_secret: docker_image
+  fetch-engine:
+    image: alpine:3.21
     commands:
-      - . ./engine.env
-      - docker build
-        --build-arg ENGINE_VERSION="$ENGINE_VERSION"
-        --build-arg ENGINE_SHA256="$ENGINE_SHA256"
-        --label org.opencontainers.image.version="$ENGINE_VERSION"
-        --label suwayomi.commit="$ENGINE_SHA"
-        -t "$IMAGE:latest" -t "$IMAGE:$ENGINE_DATE" -t "$IMAGE:$ENGINE_SHA" .
+      - apk add --no-cache curl >/dev/null
+      - |
+        set -eu
+        . ./engine.env
+        mkdir -p .cache
+        curl -fsSL -o .cache/engine.jar \
+          "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$ENGINE_VERSION/Suwayomi-Server-$ENGINE_VERSION.jar"
+        echo "$ENGINE_SHA256  .cache/engine.jar" | sha256sum -c -
+        ls -l .cache/engine.jar
     when:
       - event: push
-        branch: main
+        branch: [main, V2]
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
-  # 3. prove it works before anything is published
+  # 3. prove it works before anything is built
   # ---------------------------------------------------------------------------------------------
   test-engine:
-    image: docker:29-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      IMAGE:
-        from_secret: docker_image
+    image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
-      - . ./engine.env
-      - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" up
-      - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" hard
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null
+      - |
+        set -eu
+        mkdir -p /local && cp -r test/fixtures/local-library/. /local/
+        # the image's own entrypoint, run as a process: same jar, same config path, same defaults
+        LOCAL_SOURCE_PATH=/local \
+        FLARESOLVERR_ENABLED=true \
+        FLARESOLVERR_URL=http://127.0.0.1:8191 \
+        JAR="$PWD/.cache/engine.jar" \
+          sh entrypoint.sh > /tmp/engine.log 2>&1 &
+        echo "engine starting as pid $!"
+      - sh test/check-engine.sh http://127.0.0.1:4567 hard
+      - echo "--- engine log (tail) ---"; tail -5 /tmp/engine.log
     when:
       - event: push
-        branch: main
+        branch: [main, V2]
       - event: cron
 
   # Advisory: a real extension against a real site. Sites go down, rate-limit and Cloudflare-block CI
   # IPs, and extensions get retired upstream -- none of that is a regression in this image, so this
-  # step is never allowed to fail the release.
+  # step is never allowed to fail the release. It restarts the engine (the jar is already in the
+  # workspace) rather than sharing one with the step above, because steps are separate containers.
   test-live-sources:
-    image: docker:29-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      IMAGE:
-        from_secret: docker_image
-    failure: ignore
+    image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
-      - . ./engine.env
-      - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" site
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null
+      - |
+        set -eu
+        mkdir -p /local && cp -r test/fixtures/local-library/. /local/
+        LOCAL_SOURCE_PATH=/local \
+        FLARESOLVERR_ENABLED=true \
+        FLARESOLVERR_URL=http://127.0.0.1:8191 \
+        JAR="$PWD/.cache/engine.jar" \
+          sh entrypoint.sh > /tmp/engine.log 2>&1 &
+        echo "engine starting as pid $!"
+      - sh test/check-engine.sh http://127.0.0.1:4567 hard >/dev/null
+      - sh test/check-engine.sh http://127.0.0.1:4567 site || echo "(no source answered -- advisory, not a failure)"
+    failure: ignore
     when:
       - event: push
-        branch: main
+        branch: [main, V2]
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
-  # 4. publish all three tags. Reached only if every test above passed.
+  # 4. build and publish all three tags. Reached only if every test above passed.
   # ---------------------------------------------------------------------------------------------
-  push:
+  build-and-push:
     image: docker:29-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      DOCKER_HOST: tcp://docker:2375
       IMAGE:
         from_secret: docker_image
       REGISTRY:
@@ -136,10 +151,37 @@ steps:
         from_secret: docker_password
     commands:
       - . ./engine.env
-      - sh test/ci-smoke.sh "$IMAGE:$ENGINE_SHA" down
+      - |
+        set -eu
+        i=0
+        until docker info >/dev/null 2>&1; do
+          i=$((i + 1)); [ "$i" -lt 60 ] || { echo "the dind service never came up"; exit 1; }; sleep 2
+        done
+        echo "dind is up: $(docker version --format 'server={{.Server.Version}}')"
+      - docker build
+        --build-arg ENGINE_VERSION="$ENGINE_VERSION"
+        --build-arg ENGINE_SHA256="$ENGINE_SHA256"
+        --label org.opencontainers.image.version="$ENGINE_VERSION"
+        --label suwayomi.commit="$ENGINE_SHA"
+        -t "$IMAGE:latest" -t "$IMAGE:$ENGINE_DATE" -t "$IMAGE:$ENGINE_SHA" .
+      - |
+        set -eu
+        # packaging guard, without running the image: these are what Uchiyomi and the compose file rely on
+        entry=$(docker image inspect "$IMAGE:$ENGINE_SHA" --format '{{json .Config.Entrypoint}}')
+        ports=$(docker image inspect "$IMAGE:$ENGINE_SHA" --format '{{json .Config.ExposedPorts}}')
+        commit=$(docker image inspect "$IMAGE:$ENGINE_SHA" --format '{{index .Config.Labels "suwayomi.commit"}}')
+        echo "entrypoint=$entry ports=$ports engine_commit=$commit"
+        echo "$entry" | grep -q 'entrypoint.sh' || { echo "unexpected entrypoint in the built image"; exit 1; }
+        echo "$ports" | grep -q '4567/tcp' || { echo "port 4567 is not exposed in the built image"; exit 1; }
+        [ "$commit" = "$ENGINE_SHA" ] || { echo "label suwayomi.commit is not $ENGINE_SHA"; exit 1; }
       - echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
       - docker push --all-tags "$IMAGE"
+    services:
+      - name: docker
+        image: docker:29-dind
+        privileged: true
+        commands: dockerd-entrypoint.sh --storage-driver=vfs --tls=false --insecure-registry=10.100.102.2:21100
     when:
       - event: push
-        branch: main
+        branch: [main, V2]
       - event: cron

@@ -2,6 +2,7 @@
 *.log
 /tmp/
 
-# written by the smoke test / the pipeline
+# written by the tests / the pipeline
 .ci-tools/
+.cache/
 engine.env
