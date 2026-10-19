@@ -152,10 +152,13 @@ whether the solved response is used in place of the site's own.
    see the note below). The Dockerfile takes **no build arguments** — it reads `engine.env` from the
    build context, which is the same file the test used, so the image cannot carry an engine the tests
    did not run against;
-4. **tags the engine's identity** — `latest` and the repo commit come from the build step. The two tags
-   that identify the *engine* (`<YYYY-MM-DD>`, `<suwayomi-commit>`) are computed at run time, and a
-   plugin's `settings` are static YAML — Woodpecker substitutes `${VAR}` in the config file itself, so a
-   computed value cannot reach `tags:`. A small step after the push copies the manifest the build just
+4. **tags the engine's identity** — `latest` comes from the build step; the two tags that identify the
+   *engine* (`<engine-release-date>`, `<engine-sha>`) are added after it. The date is the upstream
+   release's own date (UTC), not the day the cron fired, so a week with no new release adds no new tag
+   and every tag names a real engine. The *repo* commit is deliberately not tagged: it says nothing
+   about which engine you would be running. Those two can't come from the plugin because a plugin's
+   `settings` are static YAML and Woodpecker substitutes `${VAR}` in the config file itself — a computed
+   value arrives empty. A small step after the push copies the manifest the build just
    published to those two tag names over the registry API (`curl -k -u`, plain Basic auth);
 5. **checks a real source, last and advisory** — a real extension against a real site, `failure: ignore`.
    Sites go down, rate-limit and Cloudflare-block CI IPs, and extensions get retired upstream; none of

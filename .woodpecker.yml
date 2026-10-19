@@ -3,7 +3,9 @@
 # `build-and-push` is Eran's template from his other projects, used as the base: plugins/docker,
 # privileged, the shared `tools-net` network, registry/repo/credentials from Woodpecker secrets,
 # `insecure: true` (this registry is HTTPS with a self-signed certificate -- HTTP/2, plain Basic auth
-# on the /v2/ API, no token service), pushing `latest` and the commit sha.
+# on the /v2/ API, no token service). The template's second tag, the *repo* commit sha, is dropped: it
+# says nothing about which engine you would actually be running. The engine's own identity is tagged
+# instead (see below).
 #
 # What this repo adds around it:
 #   * testing BEFORE the build, because a release must prove itself first;
@@ -37,8 +39,13 @@ steps:
       - apk add --no-cache curl git jq >/dev/null
       - |
         set -eu
-        TAG=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest | jq -r .tag_name)
+        REL=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest)
+        TAG=$(echo "$REL" | jq -r .tag_name)
         [ -n "$TAG" ] && [ "$TAG" != "null" ] || { echo "could not resolve the newest Suwayomi release"; exit 1; }
+        # the ENGINE's own release date (UTC), not the day this cron happened to fire: the same engine
+        # always produces the same date tag, so a week with no upstream release adds no new tag.
+        DATE=$(echo "$REL" | jq -r '.published_at // ""' | cut -c1-10)
+        case "$DATE" in ''|null|*[!0-9-]*) echo "no release date in the API response -- using today"; DATE=$(date -u +%F);; esac
         SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
               | awk '/\.jar$/ {print $1}' | head -1)
         [ -n "$SUM" ] || { echo "no jar checksum in the $TAG release"; exit 1; }
@@ -50,7 +57,7 @@ steps:
           echo "ENGINE_VERSION=$TAG"
           echo "ENGINE_SHA256=$SUM"
           echo "ENGINE_SHA=$SHA"
-          echo "ENGINE_DATE=$(date -u +%F)"
+          echo "ENGINE_DATE=$DATE"
         } > engine.env
         echo "engine under test:"; cat engine.env
     when:
@@ -122,8 +129,9 @@ steps:
       dockerfile: Dockerfile
       context: .
       tags:
+        # Only what the plugin can know before any step runs. The engine tags (<engine-release-date>,
+        # <engine-sha>) are computed at run time and added by tag-engine-identity below.
         - latest
-        - "${CI_COMMIT_SHA:0:8}"
       username:
         from_secret: docker_username
       password:
