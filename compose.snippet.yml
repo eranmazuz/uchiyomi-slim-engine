@@ -1,0 +1,64 @@
+# Drop-in replacement for the `uchiyomi-suwayomi` service in Uchiyomi's deploy/docker-compose.yml.
+#
+# Swap the image line and add the JAVA_TOOL_OPTIONS / memory settings below; every other line is
+# unchanged from upstream's file, including the volume path, so an existing engine volume (installed
+# extensions, sources, the H2 database) carries over as-is.
+#
+# Build it first:
+#   cd uchiyomi-slim-engine && docker build -t uchiyomi-engine-slim:v2.4.2366 .
+
+  uchiyomi-suwayomi:
+    # was: ghcr.io/suwayomi/suwayomi-server:v2.4.2366
+    image: uchiyomi-engine-slim:v2.4.2366
+    container_name: uchiyomi-suwayomi
+    deploy:
+      replicas: ${EXTENSION_ENGINE:-1}
+    restart: unless-stopped
+    # 512 MB instead of 2048 MB. The engine no longer carries an Xvfb + Chromium WebView and no
+    # longer runs its own library updater or backups; keep the ceiling ~200 MB above the heap
+    # (entrypoint.sh defaults to -Xmx320m unless you set JAVA_TOOL_OPTIONS yourself).
+    mem_limit: ${SUWAYOMI_MEM_LIMIT:-512m}
+    environment:
+      TZ: ${TZ:-UTC}
+      # Optional. The entrypoint sets a lean default (-Xmx320m, serial GC, capped metaspace/code
+      # cache/direct memory, AWT headless); set this to override it.
+      # JAVA_TOOL_OPTIONS: "-Xmx512m -XX:+UseSerialGC"
+      MALLOC_ARENA_MAX: "2"
+      AUTO_DOWNLOAD_CHAPTERS: "false"
+      DOWNLOAD_AS_CBZ: "true"
+      FLARESOLVERR_ENABLED: "true"
+      FLARESOLVERR_URL: http://uchiyomi-flaresolverr:8191
+      # The engine's own scheduler and backups are off by default in this image
+      # (globalUpdateInterval=0, backupInterval=0); Uchiyomi owns both.
+    volumes:
+      - uchiyomi_suwayomi:/home/suwayomi/.local/share/Tachidesk
+    networks: [uchiyomi_app]
+    expose:
+      - "4567"
+    healthcheck:
+      # Unchanged from Uchiyomi's file: the image keeps bash for exactly this.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4567; printf 'GET /api/v1/settings/about HTTP/1.0\\r\\n\\r\\n' >&3; head -1 <&3 | grep -qE ' (200|401) '"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Unchanged from Uchiyomi's compose file. It is a separate container by design: this image has no
+  # browser of its own, and the solver is what answers a Cloudflare challenge instead.
+  uchiyomi-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: uchiyomi-flaresolverr
+    restart: unless-stopped
+    shm_size: 1gb
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8191/ | grep -q 'FlareSolverr is ready' || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    environment:
+      LOG_LEVEL: warning
+    networks: [uchiyomi_app]
+    expose:
+      - "8191"
