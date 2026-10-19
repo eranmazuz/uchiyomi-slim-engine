@@ -199,19 +199,52 @@ rescue is not reproducible here.
    actually runs extensions. What remains (GraalJS/Truffle/ICU, ~49 MB) is dead weight for this path in
    principle, but deleting classes from a fat jar fails at the first class-init that touches them —
    not worth 49 MB without a reason.
-5. **Version pinning.** The image pins engine `v2.4.2366`; Uchiyomi supports `v2.3.2243` and up. Moving
-   to another engine version means moving `ENGINE_VERSION`/`ENGINE_SHA256` in the Dockerfile (the
-   sha256 is checked at build time, so a wrong one fails the build rather than shipping silently).
+5. **Version pinning.** The image no longer pins an engine: it resolves the newest Suwayomi release and
+   verifies the jar against that release's published `Checksums.sha256`, so a wrong hash fails the build
+   rather than shipping silently. Pin deliberately with `--build-arg ENGINE_VERSION=... ENGINE_SHA256=...`
+   or by filling in `engine.env`. Uchiyomi supports `v2.3.2243` and up; this pipeline has been exercised
+   on `v2.4.2366`.
 
 ---
 
-## 9. Files
+## 9. Continuous integration
+
+`.woodpecker.yml` builds on the `plugins/docker` template the other repos in this homelab use and adds what
+this image needs. Every run — a push to `main`, or the weekly cron — goes:
+
+| # | step | what it proves |
+|---|---|---|
+| 1 | `resolve-engine` | the newest Suwayomi release, its commit, and the jar's hash from upstream's own `Checksums.sha256`; written to `engine.env` |
+| 2 | `fetch-engine` | the jar downloads and its sha256 matches that file |
+| 3 | `test-engine` | the engine **runs and answers**: started as a process from the same jar and `entrypoint.sh`, then the hard assertions over localhost — settings, a real page served from a local source, a real extension installed from the keiyoushi store |
+| 4 | `build-and-push` | the Dockerfile builds and the image lands in the registry as `latest` |
+| 5 | `tag-engine-identity` | the manifest just pushed is re-tagged with the engine's release date and its commit |
+| 6 | `test-live-sources` | advisory, `failure: ignore`, deliberately last: a real extension against a real site |
+
+Three tags per release, over one digest: `latest`, `<engine-release-date>` (the upstream release's own date,
+UTC — not the day the cron fired, so a week with no new release adds no tag), and `<engine-sha>` (Suwayomi's
+commit). The CI repo's own commit is deliberately not tagged: it says nothing about the engine inside.
+
+Verified end to end: the assertions above pass and both extra tags answered `HTTP 201`. Also verified that a
+push to any other branch runs nothing at all, so nothing but `main` can publish.
+
+**What the test step cannot see:** the image's own packaging — base image, `COPY` paths, user, healthcheck —
+because it runs the jar as a process rather than the image as a container. A Dockerfile that builds but
+produces a broken image would still pass. `test/ci-smoke.sh` covers exactly that gap, and is how the
+packaging was verified while it was written.
+
+## 10. Files
 
 | file | what it is |
 |---|---|
 | `Dockerfile` | two stages: fetch+verify+strip the release jar, then the runtime image |
 | `entrypoint.sh` | translates env vars into `-D` config overrides and `exec`s the JVM; carries the lean JVM defaults |
 | `compose.snippet.yml` | drop-in replacement for the `uchiyomi-suwayomi` service (and the FlareSolverr service), same volume path and uid as upstream |
+| `.woodpecker.yml` | the pipeline: resolve → fetch → test → build+push → tag → advisory site check |
+| `engine.env` | build input read from the build context; committed empty, overwritten by the pipeline's resolve step so the image always carries exactly the engine the tests ran against |
+| `test/check-engine.sh` | the hard assertions the pipeline runs against a live engine |
+| `test/ci-smoke.sh` | runs a *built image* in containers and checks it — for the packaging the pipeline cannot see |
+| `test/make-fixture.py` | generates the CBZ fixture that the hermetic page test serves |
 | `test/uchiyomi-api-check.py` | replays Uchiyomi's whole API surface against an engine; the acceptance test |
 | `test/flaresolverr-ab.py` | searches the same sources with the solver off and on, flipping it through the same mutation Uchiyomi uses |
 | `README.md` | the image's own documentation: what was removed, measurements, trade-offs |
