@@ -135,6 +135,42 @@ i.e. when a response actually looks like a challenge — so a quiet solver log d
 is the expected shape, not a fault. If a source is challenged, `flareSolverrAsResponseFallback` decides
 whether the solved response is used in place of the site's own.
 
+## CI (Woodpecker)
+
+`.woodpecker.yml` runs on a push to `main` and on a weekly cron. Every run:
+
+1. **resolves the newest Suwayomi release** — the version is not pinned in the pipeline; the tag, the
+   upstream commit and the jar's checksum are read from GitHub, verified against upstream's own
+   `Checksums.sha256`, and written to `engine.env`;
+2. **tests the engine** — as an *ordinary process* inside the step: the same jar the image carries,
+   started through the same `entrypoint.sh` with the same configuration environment, checked over
+   localhost by `test/check-engine.sh hard`. No Docker socket, no `volumes` trust, no container of the
+   image (see "what that cannot see" below);
+3. **builds and pushes** — `build-and-push` is the `plugins/docker` template used elsewhere in this
+   homelab, unchanged: `privileged: true`, the shared `tools-net` network, `registry`/`repo`/credentials
+   from Woodpecker secrets, `insecure: true` (this registry is HTTPS with a **self-signed** certificate;
+   see the note below). The Dockerfile takes **no build arguments** — it reads `engine.env` from the
+   build context, which is the same file the test used, so the image cannot carry an engine the tests
+   did not run against;
+4. **tags the engine's identity** — `latest` and the repo commit come from the build step. The two tags
+   that identify the *engine* (`<YYYY-MM-DD>`, `<suwayomi-commit>`) are computed at run time, and a
+   plugin's `settings` are static YAML — Woodpecker substitutes `${VAR}` in the config file itself, so a
+   computed value cannot reach `tags:`. A small step after the push copies the manifest the build just
+   published to those two tag names over the registry API (`curl -k -u`, plain Basic auth);
+5. **checks a real source, last and advisory** — a real extension against a real site, `failure: ignore`.
+   Sites go down, rate-limit and Cloudflare-block CI IPs, and extensions get retired upstream; none of
+   that is a regression in this image, so it must not fail the release — or delay it.
+
+The registry, for anyone debugging this: `https://10.100.102.2:21100`, a **self-signed** certificate
+(subject == issuer) with plain Basic auth on `/v2/` — no token service. An HTTP request to it answers
+`400 Client sent an HTTP request to an HTTPS server`.
+
+**What CI cannot see:** the image's own packaging — base image, `COPY` paths, the user, the healthcheck —
+because the test runs the jar as a process rather than the image as a container. A broken Dockerfile
+still fails the build; a Dockerfile that builds but produces a broken image would not be caught here.
+`test/ci-smoke.sh` exists for exactly that gap: point it at a built image and it runs the image in
+containers and checks it, which is how the packaging was verified while this was built.
+
 ## Build and run
 
 ```sh

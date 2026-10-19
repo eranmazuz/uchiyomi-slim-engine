@@ -2,7 +2,7 @@
 *.log
 /tmp/
 
-# written by the tests / the pipeline
+# written by the tests and the pipeline. engine.env is deliberately NOT ignored: it is a committed
+# build input that the pipeline overwrites in the workspace before building.
 .ci-tools/
 .cache/
-engine.env

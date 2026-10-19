@@ -1,4 +1,9 @@
-test/
-REPORT.md
+# Keep the build context small: the tests, the docs and the pipeline's own scratch do not belong in it.
+# engine.env DOES belong -- it is the build input the Dockerfile reads.
 .git
 .gitignore
+.dockerignore
+test/
+REPORT.md
+.ci-tools/
+.cache/

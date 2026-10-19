@@ -12,7 +12,7 @@
 #     them in the entrypoint to sed the config; this image overrides config with -D system
 #     properties instead, which is the mechanism upstream's own systemd unit uses.
 #
-# Result: ~2.13 GB -> ~0.3 GB, and a leaner JVM at runtime (see README.md for measured numbers).
+# Result: ~2.13 GB -> ~750 MB, and a leaner JVM at runtime (see README.md for measured numbers).
 #
 # Everything the extension engine itself needs is kept: the whole AndroidCompat fake-Android runtime
 # (the ~84 MB that makes Mihon/Tachiyomi extensions run off-Android), the extension store/install
@@ -24,16 +24,42 @@ ARG BASE_IMAGE=eclipse-temurin:25.0.4_7-jre-noble
 # ---------------------------------------------------------------- stage 1: fetch + strip the jar
 FROM ${BASE_IMAGE} AS fetch
 
-ARG ENGINE_VERSION=v2.4.2366
-ARG ENGINE_SHA256=af9feb20af9d7ebe9e30769e6c6ebc7fc7ab1c447388d42e0280b1da5fe07bfd
+# Which engine ends up in the image. Resolution order:
+#   1. --build-arg ENGINE_VERSION / ENGINE_SHA256          (a deliberately pinned build)
+#   2. engine.env in the build context                      (what CI writes after resolving the newest
+#                                                            release -- so the image carries exactly the
+#                                                            engine the pipeline tested)
+#   3. resolve the newest Suwayomi release here              (a bare `docker build` still works)
+# Whichever path is taken, the jar is verified against upstream's own Checksums.sha256 before use.
+ARG ENGINE_VERSION=
+ARG ENGINE_SHA256=
 
 RUN apt-get update && apt-get -y install --no-install-recommends curl unzip zip ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /engine
-RUN curl -fsSL -o engine.jar \
-      "https://github.com/Suwayomi/Suwayomi-Server/releases/download/${ENGINE_VERSION}/Suwayomi-Server-${ENGINE_VERSION}.jar" \
- && echo "${ENGINE_SHA256}  engine.jar" | sha256sum -c -
+COPY engine.env /engine/engine.env
+
+RUN set -eux; \
+    PIN_TAG="${ENGINE_VERSION:-}"; PIN_SUM="${ENGINE_SHA256:-}"; \
+    set +u; . /engine/engine.env; set -u; \
+    TAG="${PIN_TAG:-${ENGINE_VERSION:-}}"; \
+    SUM="${PIN_SUM:-${ENGINE_SHA256:-}}"; \
+    if [ -z "$TAG" ]; then \
+        TAG=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest \
+              | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'); \
+    fi; \
+    [ -n "$TAG" ] || { echo "could not resolve a Suwayomi release to build"; exit 1; }; \
+    if [ -z "$SUM" ]; then \
+        SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
+              | awk '/\.jar$/ {print $1}' | head -1); \
+    fi; \
+    [ -n "$SUM" ] || { echo "no jar checksum published for $TAG"; exit 1; }; \
+    echo "$TAG" > /engine/version; \
+    curl -fsSL -o engine.jar \
+      "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Suwayomi-Server-$TAG.jar"; \
+    echo "$SUM  engine.jar" | sha256sum -c -; \
+    echo "building engine $TAG (sha256 $SUM)"
 
 # `zip -d` rewrites only the central directory, so everything we keep stays byte-identical.
 # No signature files exist in the release jar; this removes them if upstream ever starts signing.
@@ -52,9 +78,6 @@ RUN set -eux; \
 # ---------------------------------------------------------------- stage 2: the runtime
 FROM ${BASE_IMAGE}
 
-# v2.4.2366 is what Uchiyomi v0.78.x pins and tests against (bff/src/lib/sources/suwayomi/enginePin.ts).
-ARG ENGINE_VERSION=v2.4.2366
-
 ENV HOME=/home/suwayomi \
     LANG=C.UTF-8 \
     TZ=UTC \
@@ -72,8 +95,11 @@ RUN set -eux; \
 # The jar is only ever read, so plain COPY (root-owned, mode 644) is enough and costs no chown layer;
 # the writable paths are the volume and the user's home, both owned by 1000.
 COPY --from=fetch /engine/engine.jar /home/suwayomi/startup/engine.jar
+# Which engine this is, readable from inside the running container (`cat engine-version`).
+COPY --from=fetch /engine/version /home/suwayomi/engine-version
 COPY entrypoint.sh /home/suwayomi/entrypoint.sh
-RUN chmod 0644 /home/suwayomi/startup/engine.jar && chmod 0755 /home/suwayomi/entrypoint.sh
+RUN chmod 0644 /home/suwayomi/startup/engine.jar /home/suwayomi/engine-version \
+ && chmod 0755 /home/suwayomi/entrypoint.sh
 
 USER suwayomi
 WORKDIR /home/suwayomi
