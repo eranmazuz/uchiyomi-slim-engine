@@ -99,15 +99,18 @@ steps:
     image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
       - |
+        set -eu
+        # ONE commands: item for the whole step, on purpose: `exit` inside an item ends the entire step,
+        # so a retry loop that exits early silently skips everything below it -- and the step still reports
+        # success. That is how a step can go green without running an assertion.
+        ok=""
         for attempt in 1 2 3 4 5; do
-          apt-get update -qq >/dev/null 2>&1 && \
-          apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1 && exit 0
+          if apt-get update -qq >/dev/null 2>&1 && \
+             apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1; then ok=1; break; fi
           echo "apt attempt $attempt failed (DNS or CDN hiccup), retrying"
           sleep 15
         done
-        echo "could not install curl+jq after 5 attempts -- if it is DNS, it affects every pipeline"; exit 1
-      - |
-        set -eu
+        [ -n "$ok" ] || { echo "could not install curl+jq after 5 attempts -- if it is DNS, it affects every pipeline"; exit 1; }
         mkdir -p /local && cp -r test/fixtures/local-library/. /local/
         LOCAL_SOURCE_PATH=/local \
         FLARESOLVERR_ENABLED=true \
@@ -115,8 +118,8 @@ steps:
         JAR="$PWD/.cache/engine.jar" \
           sh entrypoint.sh > /tmp/engine.log 2>&1 &
         echo "engine starting as pid $!"
-      - sh test/check-engine.sh http://127.0.0.1:4567 hard
-      - echo "--- engine log (tail) ---"; tail -5 /tmp/engine.log
+        sh test/check-engine.sh http://127.0.0.1:4567 hard
+        echo "--- engine log (tail) ---"; tail -5 /tmp/engine.log
     when:
       - event: push
         branch: [main, V2]
@@ -160,14 +163,16 @@ steps:
     image: alpine:3.21
     commands:
       - |
+        set -eu
+        # One commands: item for the whole step: `exit` inside an item ends the step, so an early exit in a
+        # retry loop would skip the tagging below and still report success.
+        ok=""
         for attempt in 1 2 3 4; do
-          apk add --no-cache curl >/dev/null 2>&1 && exit 0
+          if apk add --no-cache curl >/dev/null 2>&1; then ok=1; break; fi
           echo "apk attempt $attempt failed (CDN hiccup), retrying"
           sleep 5
         done
-        echo "could not install curl after 4 attempts"; exit 1
-      - |
-        set -eu
+        [ -n "$ok" ] || { echo "could not install curl after 4 attempts"; exit 1; }
         # Normally the working tree still holds what resolve-engine wrote. If a step in between reset it,
         # engine.env is back to its committed (empty) state -- re-resolve here rather than leave a pushed
         # image untagged, and say so loudly, because it means the tags describe a fresh lookup of the
@@ -234,15 +239,17 @@ steps:
     image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
       - |
+        set -eu
+        # One commands: item for the whole step: an early `exit` inside an item ends the step, so a retry
+        # loop that exits would skip the checks below and still report success.
+        ok=""
         for attempt in 1 2 3 4 5; do
-          apt-get update -qq >/dev/null 2>&1 && \
-          apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1 && exit 0
+          if apt-get update -qq >/dev/null 2>&1 && \
+             apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1; then ok=1; break; fi
           echo "apt attempt $attempt failed (DNS or CDN hiccup), retrying"
           sleep 15
         done
-        echo "could not install curl+jq after 5 attempts -- if it is DNS, it affects every pipeline"; exit 1
-      - |
-        set -eu
+        [ -n "$ok" ] || { echo "could not install curl+jq after 5 attempts"; exit 1; }
         mkdir -p /local && cp -r test/fixtures/local-library/. /local/
         LOCAL_SOURCE_PATH=/local \
         FLARESOLVERR_ENABLED=true \
@@ -250,8 +257,8 @@ steps:
         JAR="$PWD/.cache/engine.jar" \
           sh entrypoint.sh > /tmp/engine.log 2>&1 &
         echo "engine starting as pid $!"
-      - sh test/check-engine.sh http://127.0.0.1:4567 hard >/dev/null
-      - sh test/check-engine.sh http://127.0.0.1:4567 site || echo "(no source answered -- advisory, not a failure)"
+        sh test/check-engine.sh http://127.0.0.1:4567 hard >/dev/null
+        sh test/check-engine.sh http://127.0.0.1:4567 site || echo "(no source answered -- advisory, not a failure)"
     failure: ignore
     when:
       - event: push
