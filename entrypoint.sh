@@ -90,6 +90,13 @@ set -- "$@" "-Dsuwayomi.tachidesk.config.server.updateMangas=${UPDATE_MANGAS:-fa
 set -- "$@" "-Dsuwayomi.tachidesk.config.server.backupInterval=${BACKUP_INTERVAL:-0}"
 set -- "$@" "-Dsuwayomi.tachidesk.config.server.backupTTL=${BACKUP_TTL:-0}"
 
+# local source: a directory of CBZ/CBR/EPUB/PDF or image folders the engine serves pages from. Uchiyomi
+# keeps its own library on its own disk, so this is normally unset -- CI sets it so the page path
+# (chapter -> page URLs -> page bytes) is exercised with no external site and no extension involved.
+if [ -n "${LOCAL_SOURCE_PATH:-}" ]; then
+    set -- "$@" "-Dsuwayomi.tachidesk.config.server.localSourcePath=\"${LOCAL_SOURCE_PATH}\""
+fi
+
 # logs: bounded, off by default
 set -- "$@" "-Dsuwayomi.tachidesk.config.server.debugLogsEnabled=${DEBUG:-false}"
 set -- "$@" "-Dsuwayomi.tachidesk.config.server.maxLogFiles=${MAX_LOG_FILES:-3}"
