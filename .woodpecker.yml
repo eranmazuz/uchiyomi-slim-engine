@@ -66,7 +66,7 @@ steps:
         echo "engine under test:"; cat engine.env
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -87,7 +87,7 @@ steps:
         ls -l .cache/engine.jar
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -122,7 +122,7 @@ steps:
         echo "--- engine log (tail) ---"; tail -5 /tmp/engine.log
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -152,7 +152,7 @@ steps:
         from_secret: docker_password
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -227,7 +227,7 @@ steps:
         from_secret: docker_password
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
@@ -262,5 +262,5 @@ steps:
     failure: ignore
     when:
       - event: push
-        branch: [main, V2]
+        branch: main
       - event: cron
