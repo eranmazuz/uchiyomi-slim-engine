@@ -98,7 +98,14 @@ steps:
   test-engine:
     image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
-      - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null
+      - |
+        for attempt in 1 2 3 4 5; do
+          apt-get update -qq >/dev/null 2>&1 && \
+          apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1 && exit 0
+          echo "apt attempt $attempt failed (DNS or CDN hiccup), retrying"
+          sleep 15
+        done
+        echo "could not install curl+jq after 5 attempts -- if it is DNS, it affects every pipeline"; exit 1
       - |
         set -eu
         mkdir -p /local && cp -r test/fixtures/local-library/. /local/
@@ -226,7 +233,14 @@ steps:
   test-live-sources:
     image: eclipse-temurin:25.0.4_7-jre-noble
     commands:
-      - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null
+      - |
+        for attempt in 1 2 3 4 5; do
+          apt-get update -qq >/dev/null 2>&1 && \
+          apt-get install -y -qq --no-install-recommends curl jq ca-certificates >/dev/null 2>&1 && exit 0
+          echo "apt attempt $attempt failed (DNS or CDN hiccup), retrying"
+          sleep 15
+        done
+        echo "could not install curl+jq after 5 attempts -- if it is DNS, it affects every pipeline"; exit 1
       - |
         set -eu
         mkdir -p /local && cp -r test/fixtures/local-library/. /local/
