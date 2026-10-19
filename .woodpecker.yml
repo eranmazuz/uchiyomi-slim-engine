@@ -39,22 +39,23 @@ steps:
   resolve-engine:
     image: alpine:3.21
     commands:
-      - apk add --no-cache curl git jq >/dev/null
       - |
         set -eu
-        REL=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest)
-        TAG=$(echo "$REL" | jq -r .tag_name)
-        [ -n "$TAG" ] && [ "$TAG" != "null" ] || { echo "could not resolve the newest Suwayomi release"; exit 1; }
+        # busybox wget + grep only: installing packages would make this step depend on the Alpine CDN,
+        # which is exactly the kind of thing that has no business failing a release.
+        API=https://api.github.com/repos/Suwayomi/Suwayomi-Server
+        REL=$(wget -qO- "$API/releases/latest")
+        TAG=$(echo "$REL" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"//; s/"$//')
+        [ -n "$TAG" ] || { echo "could not resolve the newest Suwayomi release"; echo "$REL" | head -5; exit 1; }
         # the ENGINE's own release date (UTC), not the day this cron happened to fire: the same engine
         # always produces the same date tag, so a week with no upstream release adds no new tag.
-        DATE=$(echo "$REL" | jq -r '.published_at // ""' | cut -c1-10)
-        case "$DATE" in ''|null|*[!0-9-]*) echo "no release date in the API response -- using today"; DATE=$(date -u +%F);; esac
-        SUM=$(curl -fsSL "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
+        DATE=$(echo "$REL" | grep -o '"published_at": *"[0-9-]\{10\}' | head -1 | sed 's/.*"//')
+        case "$DATE" in ''|*[!0-9-]*) echo "no release date in the API response -- using today"; DATE=$(date -u +%F);; esac
+        SUM=$(wget -qO- "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$TAG/Checksums.sha256" \
               | awk '/\.jar$/ {print $1}' | head -1)
         [ -n "$SUM" ] || { echo "no jar checksum in the $TAG release"; exit 1; }
-        # dereference the tag to its commit; annotated tags need the ^{} suffix
-        SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$TAG^{}" | cut -c1-8)
-        [ -n "$SHA" ] || SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$TAG" | cut -c1-8)
+        # the commit the tag points at, from the API (no git needed in this image)
+        SHA=$(wget -qO- "$API/commits/$TAG" | grep -o '"sha": *"[0-9a-f]\{8\}' | head -1 | sed 's/.*"//')
         [ -n "$SHA" ] || { echo "could not resolve $TAG to a commit"; exit 1; }
         {
           echo "ENGINE_VERSION=$TAG"
@@ -75,12 +76,12 @@ steps:
   fetch-engine:
     image: alpine:3.21
     commands:
-      - apk add --no-cache curl >/dev/null
       - |
         set -eu
         . ./engine.env
         mkdir -p .cache
-        curl -fsSL -o .cache/engine.jar \
+        # busybox wget + sha256sum, no package install: a CDN hiccup must not fail the release.
+        wget -q -O .cache/engine.jar \
           "https://github.com/Suwayomi/Suwayomi-Server/releases/download/$ENGINE_VERSION/Suwayomi-Server-$ENGINE_VERSION.jar"
         echo "$ENGINE_SHA256  .cache/engine.jar" | sha256sum -c -
         ls -l .cache/engine.jar
@@ -151,7 +152,13 @@ steps:
   tag-engine-identity:
     image: alpine:3.21
     commands:
-      - apk add --no-cache curl git jq >/dev/null
+      - |
+        for attempt in 1 2 3 4; do
+          apk add --no-cache curl >/dev/null 2>&1 && exit 0
+          echo "apk attempt $attempt failed (CDN hiccup), retrying"
+          sleep 5
+        done
+        echo "could not install curl after 4 attempts"; exit 1
       - |
         set -eu
         # Normally the working tree still holds what resolve-engine wrote. If a step in between reset it,
@@ -167,11 +174,11 @@ steps:
         echo "engine.env says: version=$ENGINE_VERSION date=$ENGINE_DATE sha=$ENGINE_SHA"
         if [ -z "$ENGINE_DATE" ] || [ -z "$ENGINE_SHA" ]; then
           echo "!! engine.env came back empty -- re-resolving the newest release"
-          REL=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest)
-          ENGINE_VERSION=$(echo "$REL" | jq -r .tag_name)
-          ENGINE_DATE=$(echo "$REL" | jq -r '.published_at // ""' | cut -c1-10)
-          ENGINE_SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$ENGINE_VERSION^{}" | cut -c1-8)
-          [ -n "$ENGINE_SHA" ] || ENGINE_SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$ENGINE_VERSION" | cut -c1-8)
+          API=https://api.github.com/repos/Suwayomi/Suwayomi-Server
+          REL=$(curl -fsSL "$API/releases/latest")
+          ENGINE_VERSION=$(echo "$REL" | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"//; s/"$//')
+          ENGINE_DATE=$(echo "$REL" | grep -o '"published_at": *"[0-9-]\{10\}' | head -1 | sed 's/.*"//')
+          ENGINE_SHA=$(curl -fsSL "$API/commits/$ENGINE_VERSION" | grep -o '"sha": *"[0-9a-f]\{8\}' | head -1 | sed 's/.*"//')
           echo "!! re-resolved: $ENGINE_VERSION / $ENGINE_SHA / $ENGINE_DATE"
         fi
         [ -n "$ENGINE_DATE" ] && [ -n "$ENGINE_SHA" ] || { echo "no engine identity -- refusing to tag"; exit 1; }
