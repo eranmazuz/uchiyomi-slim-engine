@@ -119,40 +119,6 @@ steps:
       - event: cron
 
   # ---------------------------------------------------------------------------------------------
-  # TEMPORARY diagnostic, removed once the registry path is proven: does the agent's own docker
-  # daemon accept this registry (its other repos use plugins/docker, which brings its own daemon and
-  # handles `insecure` itself -- this pipeline deliberately builds on the host daemon so the test
-  # step can run the image). Logs in, and reports what the daemon allows. Publishes nothing.
-  # ---------------------------------------------------------------------------------------------
-  verify-registry-access:
-    image: docker:29-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      IMAGE:
-        from_secret: docker_image
-      REGISTRY:
-        from_secret: docker_registry
-      REGISTRY_USER:
-        from_secret: docker_username
-      REGISTRY_PASSWORD:
-        from_secret: docker_password
-    commands:
-      - echo "--- what this daemon considers insecure ---"
-      - docker info 2>/dev/null | grep -i -A4 "insecure registries" || echo "(none listed)"
-      - echo "--- daemon/API versions ---"
-      - docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
-      - echo "--- does the registry answer over HTTP? ---"
-      - apk add --no-cache curl >/dev/null 2>&1 || true
-      - curl -s -o /dev/null -w 'plain-HTTP GET http://%{remote_ip}:21100/v2/ -> %{http_code}\n' --max-time 10 "http://10.100.102.2:21100/v2/" || echo "plain HTTP failed"
-      - echo "--- login with the secret credentials ---"
-      - echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
-      - echo "login OK"
-    when:
-      - event: push
-        branch: [main, V2]
-
-  # ---------------------------------------------------------------------------------------------
   # 4. publish all three tags. Reached only if every test above passed.
   # ---------------------------------------------------------------------------------------------
   push:
