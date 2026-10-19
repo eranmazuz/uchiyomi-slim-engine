@@ -176,12 +176,16 @@ steps:
         [ "$commit" = "$ENGINE_SHA" ] || { echo "label suwayomi.commit is not $ENGINE_SHA"; exit 1; }
       - echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
       - docker push --all-tags "$IMAGE"
-    services:
-      - name: docker
-        image: docker:29-dind
-        privileged: true
-        commands: dockerd-entrypoint.sh --storage-driver=vfs --tls=false --insecure-registry=10.100.102.2:21100
     when:
       - event: push
         branch: [main, V2]
       - event: cron
+
+# The daemon build-and-push uses. Woodpecker takes `services` at the PIPELINE level, not per step: a
+# nested `services:` is only a linter warning and the service is never created, which shows up later as
+# the build step waiting for a daemon that does not exist.
+services:
+  - name: docker
+    image: docker:29-dind
+    privileged: true
+    commands: dockerd-entrypoint.sh --storage-driver=vfs --tls=false --insecure-registry=10.100.102.2:21100
