@@ -155,10 +155,14 @@ steps:
         # engine.env is back to its committed (empty) state -- re-resolve here rather than leave a pushed
         # image untagged, and say so loudly, because it means the tags describe a fresh lookup of the
         # newest release rather than the exact byte-for-byte input the tests saw.
+        # NOTE: every line here must use bare $VAR, never ${VAR}. Woodpecker substitutes ${...} in the
+        # config file itself before the script runs, so ${ENGINE_DATE} arrives empty and ${X:-d} arrives as
+        # the literal default. That is what made this step fail while the values were right there.
+        ENGINE_VERSION=""; ENGINE_DATE=""; ENGINE_SHA=""
         . ./engine.env
-        echo "engine.env says: version=${ENGINE_VERSION:-<empty>} date=${ENGINE_DATE:-<empty>} sha=${ENGINE_SHA:-<empty>}"
-        if [ -z "${ENGINE_DATE:-}" ] || [ -z "${ENGINE_SHA:-}" ]; then
-          echo "!! engine.env came back empty (working tree was reset) -- re-resolving the newest release"
+        echo "engine.env says: version=$ENGINE_VERSION date=$ENGINE_DATE sha=$ENGINE_SHA"
+        if [ -z "$ENGINE_DATE" ] || [ -z "$ENGINE_SHA" ]; then
+          echo "!! engine.env came back empty -- re-resolving the newest release"
           REL=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest)
           ENGINE_VERSION=$(echo "$REL" | jq -r .tag_name)
           ENGINE_DATE=$(echo "$REL" | jq -r '.published_at // ""' | cut -c1-10)
@@ -166,8 +170,11 @@ steps:
           [ -n "$ENGINE_SHA" ] || ENGINE_SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$ENGINE_VERSION" | cut -c1-8)
           echo "!! re-resolved: $ENGINE_VERSION / $ENGINE_SHA / $ENGINE_DATE"
         fi
-        [ -n "${ENGINE_DATE:-}" ] && [ -n "${ENGINE_SHA:-}" ] || { echo "engine.env is empty -- refusing to tag"; exit 1; }
-        REPO="${IMAGE#$REGISTRY/}"
+        [ -n "$ENGINE_DATE" ] && [ -n "$ENGINE_SHA" ] || { echo "no engine identity -- refusing to tag"; exit 1; }
+        case "$IMAGE" in
+          "$REGISTRY"/*) REPO=$(printf '%s' "$IMAGE" | cut -d/ -f2-) ;;
+          *) REPO="$IMAGE" ;;
+        esac
         API="https://$REGISTRY/v2/$REPO/manifests"
         ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
         echo "registry $REGISTRY, repo $REPO"
