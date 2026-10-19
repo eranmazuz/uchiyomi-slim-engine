@@ -148,10 +148,24 @@ steps:
   tag-engine-identity:
     image: alpine:3.21
     commands:
-      - apk add --no-cache curl >/dev/null
+      - apk add --no-cache curl git jq >/dev/null
       - |
         set -eu
+        # Normally the working tree still holds what resolve-engine wrote. If a step in between reset it,
+        # engine.env is back to its committed (empty) state -- re-resolve here rather than leave a pushed
+        # image untagged, and say so loudly, because it means the tags describe a fresh lookup of the
+        # newest release rather than the exact byte-for-byte input the tests saw.
         . ./engine.env
+        echo "engine.env says: version=${ENGINE_VERSION:-<empty>} date=${ENGINE_DATE:-<empty>} sha=${ENGINE_SHA:-<empty>}"
+        if [ -z "${ENGINE_DATE:-}" ] || [ -z "${ENGINE_SHA:-}" ]; then
+          echo "!! engine.env came back empty (working tree was reset) -- re-resolving the newest release"
+          REL=$(curl -fsSL https://api.github.com/repos/Suwayomi/Suwayomi-Server/releases/latest)
+          ENGINE_VERSION=$(echo "$REL" | jq -r .tag_name)
+          ENGINE_DATE=$(echo "$REL" | jq -r '.published_at // ""' | cut -c1-10)
+          ENGINE_SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$ENGINE_VERSION^{}" | cut -c1-8)
+          [ -n "$ENGINE_SHA" ] || ENGINE_SHA=$(git ls-remote https://github.com/Suwayomi/Suwayomi-Server.git "refs/tags/$ENGINE_VERSION" | cut -c1-8)
+          echo "!! re-resolved: $ENGINE_VERSION / $ENGINE_SHA / $ENGINE_DATE"
+        fi
         [ -n "${ENGINE_DATE:-}" ] && [ -n "${ENGINE_SHA:-}" ] || { echo "engine.env is empty -- refusing to tag"; exit 1; }
         REPO="${IMAGE#$REGISTRY/}"
         API="https://$REGISTRY/v2/$REPO/manifests"
